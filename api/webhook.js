@@ -116,7 +116,7 @@ module.exports = async (request, response) => {
 
                     // Store image details for later processing (e.g., after album is selected)
                     bot.once('callback_query', async (callbackQuery) => {
-                        const selectedAlbumId = callbackQuery.data;
+                        const selectedAlbumId = callbackQuery.data; // Get selected album ID
                         const fileId = photo[photo.length - 1].file_id;
                         const fileUrl = await getImageUrl(bot, fileId);
                         const { imageBuffer, resolution } = await processImage(fileUrl);
@@ -139,6 +139,20 @@ module.exports = async (request, response) => {
                 const errorReply = `⚠️ Please include a caption with the title and album ID in the format: \`title,album_id\`.`;
                 await sendMessage(bot, id, errorReply);
             }
+        } else if (body.callback_query) {
+            // Handling the callback_query for album selection
+            const { id, data } = body.callback_query; // Extract callback data (album ID)
+
+            // Responding with album ID selection confirmation
+            const albumId = data; // This is the album ID selected by the user
+            await bot.answerCallbackQuery(body.callback_query.id, {
+                text: `You selected album: ${albumId}`,
+                show_alert: false,
+            });
+
+            // You can now proceed with further processing for this album selection
+            // This is just a simple message for confirmation
+            await bot.sendMessage(id, `You selected album: ${albumId}`);
         } else {
             console.log('No valid message in the request body');
             response.status(400).json({ error: 'Invalid request, no message found' });
