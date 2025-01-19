@@ -56,6 +56,33 @@ const uploadImage = async (imageBuffer, title, resolution, albumId, fileId) => {
     }
 };
 
+// Helper function to fetch album list from API
+const fetchAlbumList = async () => {
+    try {
+        const response = await axios.get('https://aurora.pockethost.io/api/collections/album/records');
+        return response.data.items;
+    } catch (error) {
+        throw new Error('Error fetching album list: ' + error.message);
+    }
+};
+
+// Helper function to send messages with inline keyboard (album options)
+const sendAlbumOptions = async (bot, chatId, albums) => {
+    const options = albums.map(album => ({
+        text: album.name,  // Display album name
+        callback_data: album.id,  // Album ID as callback data
+    }));
+
+    const replyMarkup = {
+        inline_keyboard: [options],
+    };
+
+    const message = 'Please select an album from the list below:';
+    await bot.sendMessage(chatId, message, {
+        reply_markup: replyMarkup,
+    });
+};
+
 // Helper function to send messages to Telegram users
 const sendMessage = async (bot, chatId, message) => {
     await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
@@ -82,17 +109,25 @@ module.exports = async (request, response) => {
                 const parts = caption.split(',');
                 if (parts.length === 2) {
                     const title = parts[0].trim();
-                    const albumId = parts[1].trim();
 
-                    const fileId = photo[photo.length - 1].file_id;
-                    const fileUrl = await getImageUrl(bot, fileId);
-                    const { imageBuffer, resolution } = await processImage(fileUrl);
+                    // Fetch album list and send options to user
+                    const albums = await fetchAlbumList();
+                    await sendAlbumOptions(bot, id, albums);
 
-                    const uploadResponse = await uploadImage(imageBuffer, title, resolution, albumId, fileId);
-                    console.log('Image uploaded successfully:', uploadResponse);
+                    // Store image details for later processing (e.g., after album is selected)
+                    bot.once('callback_query', async (callbackQuery) => {
+                        const selectedAlbumId = callbackQuery.data;
+                        const fileId = photo[photo.length - 1].file_id;
+                        const fileUrl = await getImageUrl(bot, fileId);
+                        const { imageBuffer, resolution } = await processImage(fileUrl);
 
-                    const reply = `✅ Title: *${title}*\n✅ Album ID: *${albumId}*\n✅ Image Resolution: *${resolution}*\n\nYour image and details have been uploaded successfully.`;
-                    await sendMessage(bot, id, reply);
+                        const uploadResponse = await uploadImage(imageBuffer, title, resolution, selectedAlbumId, fileId);
+                        console.log('Image uploaded successfully:', uploadResponse);
+
+                        const reply = `✅ Title: *${title}*\n✅ Album ID: *${selectedAlbumId}*\n✅ Image Resolution: *${resolution}*\n\nYour image and details have been uploaded successfully.`;
+                        await sendMessage(bot, id, reply);
+                    });
+
                 } else {
                     const errorReply = `⚠️ Invalid caption format.\n\nPlease include the title and album ID in the caption, separated by a comma:\n\n\`title,album_id\``;
                     await sendMessage(bot, id, errorReply);
