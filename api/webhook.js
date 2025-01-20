@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 
 // Store user states
-const userStates = {}; // Example: { chatId: { step: 'waiting_for_image', albumId: 'xyz' } }
+const userStates = {};
 
 // Helper function to fetch albums
 const fetchAlbums = async () => {
@@ -72,19 +72,10 @@ module.exports = async (request, response) => {
         const { body } = request;
 
         if (body && body.message) {
-            const { chat: { id: chatId }, text, photo } = body.message;
+            const { chat: { id: chatId }, text } = body.message;
 
             // Step 1: Handle /start command
             if (text === '/start') {
-                // Check if user is already in a flow
-                if (userStates[chatId]?.step === 'waiting_for_image') {
-                    await bot.sendMessage(
-                        chatId,
-                        `You have already selected an album: ${userStates[chatId].albumId}. Please upload an image or send /cancel to start over.`
-                    );
-                    return;
-                }
-
                 // Fetch and display album options
                 const albums = await fetchAlbums();
                 const options = {
@@ -95,30 +86,30 @@ module.exports = async (request, response) => {
                 await bot.sendMessage(chatId, 'Select an album to upload an image:', options);
 
                 // Update user state
-                userStates[chatId] = { step: 'waiting_for_album' };
+                userStates[chatId] = { step: 'waiting_for_image' };
                 return;
             }
 
             // Step 2: Handle image upload
-            if (photo) {
-                // Check if user is waiting to upload an image
-                if (userStates[chatId]?.step === 'waiting_for_image') {
-                    const albumId = userStates[chatId].albumId;
-                    const fileId = photo[photo.length - 1].file_id;
-                    const fileUrl = await bot.getFileLink(fileId);
-                    const { imageBuffer, resolution } = await processImage(fileUrl);
-
-                    // Upload the image
-                    const title = `Uploaded Image`; // You can customize this
-                    await uploadImage(imageBuffer, title, resolution, albumId, fileId);
-
-                    await bot.sendMessage(chatId, `✅ Image uploaded successfully to album: ${albumId}`);
-
-                    // Reset user state
-                    delete userStates[chatId];
-                } else {
+            if (userStates[chatId]?.step === 'waiting_for_image' && body.message.photo) {
+                const { albumId } = userStates[chatId];
+                if (!albumId) {
                     await bot.sendMessage(chatId, 'Please select an album first by sending /start.');
+                    return;
                 }
+
+                const fileId = body.message.photo[body.message.photo.length - 1].file_id;
+                const fileUrl = await bot.getFileLink(fileId);
+                const { imageBuffer, resolution } = await processImage(fileUrl);
+
+                // Upload the image
+                const title = `Uploaded Image`; // You can customize this
+                await uploadImage(imageBuffer, title, resolution, albumId, fileId);
+
+                await bot.sendMessage(chatId, `✅ Image uploaded successfully to album: ${albumId}`);
+
+                // Reset user state
+                delete userStates[chatId];
                 return;
             }
 
@@ -131,25 +122,17 @@ module.exports = async (request, response) => {
             const { id: queryId, data: albumId, message } = body.callback_query;
             const chatId = message.chat.id;
 
-            // Check if the user is selecting an album
-            if (userStates[chatId]?.step === 'waiting_for_album') {
-                // Save the user's album selection
-                userStates[chatId] = { step: 'waiting_for_image', albumId };
+            // Save album selection
+            userStates[chatId] = { step: 'waiting_for_image', albumId };
 
-                // Respond to the callback query
-                await bot.answerCallbackQuery(queryId, {
-                    text: `Album selected: ${albumId}`,
-                    show_alert: false,
-                });
+            // Respond to the callback query
+            await bot.answerCallbackQuery(queryId, {
+                text: `Album selected: ${albumId}. Please upload an image.`,
+                show_alert: false,
+            });
 
-                // Prompt user to upload an image
-                await bot.sendMessage(chatId, `You selected album: ${albumId}. Now, please upload an image.`);
-            } else {
-                await bot.answerCallbackQuery(queryId, {
-                    text: 'Please start by sending /start to select an album.',
-                    show_alert: true,
-                });
-            }
+            // Prompt user to upload an image
+            await bot.sendMessage(chatId, `You selected album: ${albumId}. Now, please upload an image.`);
         }
 
         response.status(200).send('OK');
