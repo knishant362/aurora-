@@ -74,8 +74,18 @@ module.exports = async (request, response) => {
         if (body && body.message) {
             const { chat: { id: chatId }, text, photo } = body.message;
 
-            // Step 1: If the user sends the /start command, show album options
+            // Step 1: Handle /start command
             if (text === '/start') {
+                // Check if user is already in a flow
+                if (userStates[chatId]?.step === 'waiting_for_image') {
+                    await bot.sendMessage(
+                        chatId,
+                        `You have already selected an album: ${userStates[chatId].albumId}. Please upload an image or send /cancel to start over.`
+                    );
+                    return;
+                }
+
+                // Fetch and display album options
                 const albums = await fetchAlbums();
                 const options = {
                     reply_markup: {
@@ -83,11 +93,15 @@ module.exports = async (request, response) => {
                     },
                 };
                 await bot.sendMessage(chatId, 'Select an album to upload an image:', options);
+
+                // Update user state
+                userStates[chatId] = { step: 'waiting_for_album' };
                 return;
             }
 
-            // Step 2: If the user uploads an image
+            // Step 2: Handle image upload
             if (photo) {
+                // Check if user is waiting to upload an image
                 if (userStates[chatId]?.step === 'waiting_for_image') {
                     const albumId = userStates[chatId].albumId;
                     const fileId = photo[photo.length - 1].file_id;
@@ -99,7 +113,9 @@ module.exports = async (request, response) => {
                     await uploadImage(imageBuffer, title, resolution, albumId, fileId);
 
                     await bot.sendMessage(chatId, `✅ Image uploaded successfully to album: ${albumId}`);
-                    delete userStates[chatId]; // Reset user state
+
+                    // Reset user state
+                    delete userStates[chatId];
                 } else {
                     await bot.sendMessage(chatId, 'Please select an album first by sending /start.');
                 }
@@ -115,17 +131,25 @@ module.exports = async (request, response) => {
             const { id: queryId, data: albumId, message } = body.callback_query;
             const chatId = message.chat.id;
 
-            // Save the user's album selection
-            userStates[chatId] = { step: 'waiting_for_image', albumId };
+            // Check if the user is selecting an album
+            if (userStates[chatId]?.step === 'waiting_for_album') {
+                // Save the user's album selection
+                userStates[chatId] = { step: 'waiting_for_image', albumId };
 
-            // Respond to the callback query
-            await bot.answerCallbackQuery(queryId, {
-                text: `Album selected: ${albumId}`,
-                show_alert: false,
-            });
+                // Respond to the callback query
+                await bot.answerCallbackQuery(queryId, {
+                    text: `Album selected: ${albumId}`,
+                    show_alert: false,
+                });
 
-            // Prompt user to upload an image
-            await bot.sendMessage(chatId, `You selected album: ${albumId}. Now, please upload an image.`);
+                // Prompt user to upload an image
+                await bot.sendMessage(chatId, `You selected album: ${albumId}. Now, please upload an image.`);
+            } else {
+                await bot.answerCallbackQuery(queryId, {
+                    text: 'Please start by sending /start to select an album.',
+                    show_alert: true,
+                });
+            }
         }
 
         response.status(200).send('OK');
