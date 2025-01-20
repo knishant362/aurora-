@@ -1,21 +1,24 @@
-// Fixes an error with Promise cancellation
-process.env.NTBA_FIX_319 = 'test';
-
 // Import necessary modules
 const TelegramBot = require('node-telegram-bot-api');
-const sharp = require('sharp');
 const axios = require('axios');
+const sharp = require('sharp');
 const FormData = require('form-data');
 const fs = require('fs');
-const os = require('os'); // Ensure os is imported for temp file path
+const os = require('os');
 
-// Helper function to fetch image URL using Telegram Bot API
-const getImageUrl = async (bot, fileId) => {
-    const file = await bot.getFile(fileId);
-    return `https://api.telegram.org/file/bot${process.env.TELEGRAM_TOKEN}/${file.file_path}`;
+// Store user states
+const userStates = {}; // Example: { chatId: { step: 'waiting_for_image', albumId: 'xyz' } }
+
+// Helper function to fetch albums
+const fetchAlbums = async () => {
+    const response = await axios.get('https://aurora.pockethost.io/api/collections/album/records');
+    return response.data.items.map(album => ({
+        text: album.name,
+        callback_data: album.id, // Album ID
+    }));
 };
 
-// Helper function to download and process the image
+// Helper function to process image
 const processImage = async (fileUrl) => {
     const imageResponse = await axios({
         method: 'get',
@@ -26,11 +29,11 @@ const processImage = async (fileUrl) => {
     const imageBuffer = Buffer.from(imageResponse.data);
     const metadata = await sharp(imageBuffer).metadata();
     const resolution = `${metadata.width}x${metadata.height}`;
-    
+
     return { imageBuffer, resolution };
 };
 
-// Helper function to upload the image to the server
+// Helper function to upload the image
 const uploadImage = async (imageBuffer, title, resolution, albumId, fileId) => {
     const form = new FormData();
     form.append('title', title);
@@ -51,41 +54,8 @@ const uploadImage = async (imageBuffer, title, resolution, albumId, fileId) => {
     } catch (error) {
         throw new Error('Error uploading image: ' + error.message);
     } finally {
-        // Clean up the temporary file
-        fs.unlinkSync(tempFilePath);
+        fs.unlinkSync(tempFilePath); // Clean up temp file
     }
-};
-
-// Helper function to fetch album list from API
-const fetchAlbumList = async () => {
-    try {
-        const response = await axios.get('https://aurora.pockethost.io/api/collections/album/records');
-        return response.data.items;
-    } catch (error) {
-        throw new Error('Error fetching album list: ' + error.message);
-    }
-};
-
-// Helper function to send messages with inline keyboard (album options)
-const sendAlbumOptions = async (bot, chatId, albums) => {
-    const options = albums.map(album => ({
-        text: album.name,  // Display album name
-        callback_data: album.id,  // Album ID as callback data
-    }));
-
-    const replyMarkup = {
-        inline_keyboard: [options],
-    };
-
-    const message = 'Please select an album from the list below:';
-    await bot.sendMessage(chatId, message, {
-        reply_markup: replyMarkup,
-    });
-};
-
-// Helper function to send messages to Telegram users
-const sendMessage = async (bot, chatId, message) => {
-    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 };
 
 // Main webhook function
@@ -102,67 +72,65 @@ module.exports = async (request, response) => {
         const { body } = request;
 
         if (body && body.message) {
-            const { chat: { id }, caption, photo } = body.message;
+            const { chat: { id: chatId }, text, photo } = body.message;
 
-            // If the message contains a photo and a caption
-            if (photo && caption) {
-                const parts = caption.split(',');
-                if (parts.length === 2) {
-                    const title = parts[0].trim();
-
-                    // Fetch album list and send options to user
-                    const albums = await fetchAlbumList();
-                    await sendAlbumOptions(bot, id, albums);
-
-                    // Store image details for later processing (e.g., after album is selected)
-                    bot.once('callback_query', async (callbackQuery) => {
-                        const selectedAlbumId = callbackQuery.data; // Get selected album ID
-                        const fileId = photo[photo.length - 1].file_id;
-                        const fileUrl = await getImageUrl(bot, fileId);
-                        const { imageBuffer, resolution } = await processImage(fileUrl);
-
-                        const uploadResponse = await uploadImage(imageBuffer, title, resolution, selectedAlbumId, fileId);
-                        console.log('Image uploaded successfully:', uploadResponse);
-
-                        const reply = `✅ Title: *${title}*\n✅ Album ID: *${selectedAlbumId}*\n✅ Image Resolution: *${resolution}*\n\nYour image and details have been uploaded successfully.`;
-                        await sendMessage(bot, id, reply);
-                    });
-
-                } else {
-                    const errorReply = `⚠️ Invalid caption format.\n\nPlease include the title and album ID in the caption, separated by a comma:\n\n\`title,album_id\``;
-                    await sendMessage(bot, id, errorReply);
-                }
-            } else if (!photo) {
-                const errorReply = `⚠️ Please upload an image with a caption containing the title and album ID in the format: \`title,album_id\`.`;
-                await sendMessage(bot, id, errorReply);
-            } else {
-                const errorReply = `⚠️ Please include a caption with the title and album ID in the format: \`title,album_id\`.`;
-                await sendMessage(bot, id, errorReply);
+            // Step 1: If the user sends the /start command, show album options
+            if (text === '/start') {
+                const albums = await fetchAlbums();
+                const options = {
+                    reply_markup: {
+                        inline_keyboard: albums.map(album => [album]), // One album per row
+                    },
+                };
+                await bot.sendMessage(chatId, 'Select an album to upload an image:', options);
+                return;
             }
-        } else if (body.callback_query) {
-            // Handling the callback_query for album selection
-            const { id, data } = body.callback_query; // Extract callback data (album ID)
 
-            // Responding with album ID selection confirmation
-            const albumId = data; // This is the album ID selected by the user
-            await bot.answerCallbackQuery(body.callback_query.id, {
-                text: `You selected album: ${albumId}`,
+            // Step 2: If the user uploads an image
+            if (photo) {
+                if (userStates[chatId]?.step === 'waiting_for_image') {
+                    const albumId = userStates[chatId].albumId;
+                    const fileId = photo[photo.length - 1].file_id;
+                    const fileUrl = await bot.getFileLink(fileId);
+                    const { imageBuffer, resolution } = await processImage(fileUrl);
+
+                    // Upload the image
+                    const title = `Uploaded Image`; // You can customize this
+                    await uploadImage(imageBuffer, title, resolution, albumId, fileId);
+
+                    await bot.sendMessage(chatId, `✅ Image uploaded successfully to album: ${albumId}`);
+                    delete userStates[chatId]; // Reset user state
+                } else {
+                    await bot.sendMessage(chatId, 'Please select an album first by sending /start.');
+                }
+                return;
+            }
+
+            // Handle invalid input
+            await bot.sendMessage(chatId, 'Invalid input. Please start by sending /start.');
+        }
+
+        // Step 3: Handle album selection (callback query)
+        if (body.callback_query) {
+            const { id: queryId, data: albumId, message } = body.callback_query;
+            const chatId = message.chat.id;
+
+            // Save the user's album selection
+            userStates[chatId] = { step: 'waiting_for_image', albumId };
+
+            // Respond to the callback query
+            await bot.answerCallbackQuery(queryId, {
+                text: `Album selected: ${albumId}`,
                 show_alert: false,
             });
 
-            // You can now proceed with further processing for this album selection
-            // This is just a simple message for confirmation
-            await bot.sendMessage(id, `You selected album: ${albumId}`);
-        } else {
-            console.log('No valid message in the request body');
-            response.status(400).json({ error: 'Invalid request, no message found' });
-            return;
+            // Prompt user to upload an image
+            await bot.sendMessage(chatId, `You selected album: ${albumId}. Now, please upload an image.`);
         }
+
+        response.status(200).send('OK');
     } catch (error) {
         console.error('Error handling webhook request:', error);
         response.status(500).json({ error: 'Internal Server Error' });
-        return;
     }
-
-    response.status(200).send('OK');
 };
