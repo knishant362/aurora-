@@ -1,6 +1,10 @@
 // Import necessary modules
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
+const sharp = require('sharp');
+const FormData = require('form-data');
+const os = require('os');
+const fs = require('fs');
 
 // Helper function to fetch albums
 const fetchAlbums = async () => {
@@ -9,6 +13,37 @@ const fetchAlbums = async () => {
         text: `${album.name} (${album.id})`, // Show album name with ID
         callback_data: album.id, // Use album ID as callback data
     }));
+};
+
+// Helper function to fetch image URL using Telegram Bot API
+const getImageUrl = async (bot, fileId) => {
+    const file = await bot.getFile(fileId);
+    return `https://api.telegram.org/file/bot${process.env.TELEGRAM_TOKEN}/${file.file_path}`;
+};
+
+// Helper function to process and upload the image
+const uploadImage = async (imageBuffer, title, resolution, albumId, fileId) => {
+    const form = new FormData();
+    form.append('title', title);
+    form.append('resolution', resolution);
+    form.append('album_id', albumId);
+
+    const tempFilePath = `${os.tmpdir()}/${fileId}.jpg`;
+    fs.writeFileSync(tempFilePath, imageBuffer);
+    form.append('image_file', fs.createReadStream(tempFilePath));
+
+    try {
+        const uploadResponse = await axios.post(
+            'https://aurora.pockethost.io/api/collections/wallpaper/records',
+            form,
+            { headers: { ...form.getHeaders() } }
+        );
+        return uploadResponse.data;
+    } catch (error) {
+        throw new Error('Error uploading image: ' + error.message);
+    } finally {
+        fs.unlinkSync(tempFilePath); // Clean up the temporary file
+    }
 };
 
 // Main webhook function
@@ -25,11 +60,10 @@ module.exports = async (request, response) => {
         const { body } = request;
 
         if (body && body.message) {
-            const { chat: { id: chatId }, text } = body.message;
+            const { chat: { id: chatId }, text, photo, caption } = body.message;
 
-            // Step 1: Handle /start command
-            if (text === '/start') {
-                // Fetch and display album options
+            // Handle /album command
+            if (text === '/album') {
                 const albums = await fetchAlbums();
                 const options = {
                     reply_markup: {
@@ -45,11 +79,42 @@ module.exports = async (request, response) => {
                 return;
             }
 
-            // Handle invalid input
-            await bot.sendMessage(chatId, 'Invalid input. Please start by sending /start.');
+            // Handle image upload with caption
+            if (photo && caption) {
+                const parts = caption.split(',');
+                if (parts.length === 2) {
+                    const title = parts[0].trim();
+                    const albumId = parts[1].trim();
+
+                    const fileId = photo[photo.length - 1].file_id;
+                    const fileUrl = await getImageUrl(bot, fileId);
+
+                    const imageResponse = await axios({
+                        method: 'get',
+                        url: fileUrl,
+                        responseType: 'arraybuffer',
+                    });
+
+                    const imageBuffer = Buffer.from(imageResponse.data);
+                    const metadata = await sharp(imageBuffer).metadata();
+                    const resolution = `${metadata.width}x${metadata.height}`;
+
+                    const uploadResponse = await uploadImage(imageBuffer, title, resolution, albumId, fileId);
+                    console.log('Image uploaded successfully:', uploadResponse);
+
+                    const reply = `✅ *Title*: ${title}\n✅ *Album ID*: ${albumId}\n✅ *Resolution*: ${resolution}\n\nYour image has been uploaded successfully.`;
+                    await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+                } else {
+                    await bot.sendMessage(chatId, '⚠️ Invalid caption format. Use: `title, album_id`.', { parse_mode: 'Markdown' });
+                }
+                return;
+            }
+
+            // Handle invalid inputs
+            await bot.sendMessage(chatId, 'Invalid command. Use /album to fetch album IDs or upload an image with a caption in the format: `title, album_id`.', { parse_mode: 'Markdown' });
         }
 
-        // Step 2: Handle album selection (callback query)
+        // Handle callback queries for album selection
         if (body.callback_query) {
             const { id: queryId, data: albumId, message } = body.callback_query;
             const chatId = message.chat.id;
