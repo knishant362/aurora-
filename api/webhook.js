@@ -46,6 +46,9 @@ const uploadImage = async (imageBuffer, title, resolution, albumId, fileId) => {
     }
 };
 
+// Maintain a set of processed update IDs to prevent duplicate handling
+const processedUpdates = new Set();
+
 // Main webhook function
 module.exports = async (request, response) => {
     try {
@@ -59,7 +62,22 @@ module.exports = async (request, response) => {
         const bot = new TelegramBot(botToken);
         const { body } = request;
 
-        if (body && body.message) {
+        // Check if this update has already been processed
+        if (body.update_id && processedUpdates.has(body.update_id)) {
+            console.log(`Duplicate update ignored: ${body.update_id}`);
+            response.status(200).send('OK');
+            return;
+        }
+
+        // Mark the update as processed
+        if (body.update_id) {
+            processedUpdates.add(body.update_id);
+        }
+
+        // Acknowledge Telegram's request immediately
+        response.status(200).send('OK');
+
+        if (body.message) {
             const { chat: { id: chatId }, text, photo, caption } = body.message;
 
             // Handle /album command
@@ -130,10 +148,7 @@ module.exports = async (request, response) => {
                 parse_mode: 'Markdown',
             });
         }
-
-        response.status(200).send('OK');
     } catch (error) {
         console.error('Error handling webhook request:', error);
-        response.status(500).json({ error: 'Internal Server Error' });
     }
 };
