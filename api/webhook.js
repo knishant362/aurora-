@@ -81,7 +81,7 @@ module.exports = async (request, response) => {
             const { chat: { id: chatId }, text, photo, caption } = body.message;
 
             // Handle /album command
-            if (text === '/album') {
+            if (text && text.trim() === '/album') {
                 const albums = await fetchAlbums();
                 const options = {
                     reply_markup: {
